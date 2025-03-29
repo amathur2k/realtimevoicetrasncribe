@@ -25,10 +25,11 @@ document.addEventListener('DOMContentLoaded', () => {
   let silenceTimeout;
   let isRecording = false;
   let transcriptionInProgress = false;
+  let recorderCheckInterval;  // Add variable to track interval
   
   // VAD settings - lower threshold for better sensitivity
   const VAD_THRESHOLD = 0.01;  // Lowered from 0.05 to 0.01 for better sensitivity
-  const SILENCE_DURATION = 1500; // Duration of silence to trigger transcription in ms
+  const SILENCE_DURATION = 3000; // Increased from 1500ms to 3000ms (3 seconds) to allow for longer pauses
   
   // Set up canvas size
   function setupCanvas() {
@@ -125,8 +126,8 @@ document.addEventListener('DOMContentLoaded', () => {
       speakingIndicator.classList.add('active');
       
       // Start a new chunk if we're not already recording one
-      if (audioChunks.length === 0 && isRecording) {
-        console.log('DEBUG: Starting media recorder');
+      if (isRecording && mediaRecorder && mediaRecorder.state !== 'recording') {
+        console.log('DEBUG: Starting media recorder from VAD');
         mediaRecorder.start();
         transcriptionStatus.textContent = 'Listening';
         transcriptionStatus.classList.add('pulse');
@@ -165,7 +166,13 @@ document.addEventListener('DOMContentLoaded', () => {
       
       // Request microphone access
       console.log('DEBUG: Requesting microphone access');
-      audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioStream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        } 
+      });
       console.log('DEBUG: Microphone access granted');
       
       // Create audio context for visualization and VAD
@@ -188,13 +195,29 @@ document.addEventListener('DOMContentLoaded', () => {
       
       // Set up media recorder
       console.log('DEBUG: Setting up MediaRecorder');
-      const options = { mimeType: 'audio/webm' };
+      let options;
+      
+      // Try with different mimeTypes
+      if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+        options = { mimeType: 'audio/webm;codecs=opus' };
+        console.log('DEBUG: Using audio/webm;codecs=opus');
+      } else if (MediaRecorder.isTypeSupported('audio/webm')) {
+        options = { mimeType: 'audio/webm' };
+        console.log('DEBUG: Using audio/webm');
+      } else if (MediaRecorder.isTypeSupported('audio/mp4')) {
+        options = { mimeType: 'audio/mp4' };
+        console.log('DEBUG: Using audio/mp4');
+      } else {
+        options = {};
+        console.log('DEBUG: Using default MediaRecorder format');
+      }
+      
       try {
         mediaRecorder = new MediaRecorder(audioStream, options);
-        console.log('DEBUG: MediaRecorder created with mimeType:', options.mimeType);
+        console.log('DEBUG: MediaRecorder created with options:', options);
       } catch (e) {
-        console.error('DEBUG: Exception while creating MediaRecorder with mimeType', options.mimeType, e);
-        console.log('DEBUG: Trying MediaRecorder without mimeType');
+        console.error('DEBUG: Exception while creating MediaRecorder with options', options, e);
+        console.log('DEBUG: Trying MediaRecorder without options');
         mediaRecorder = new MediaRecorder(audioStream);
       }
       
@@ -211,7 +234,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // Only process if we have audio chunks and are still recording
         if (audioChunks.length > 0 && isRecording && !transcriptionInProgress) {
           // Create audio blob from chunks
-          const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+          const audioBlob = new Blob(audioChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
           console.log(`DEBUG: Audio blob created, size: ${audioBlob.size} bytes`);
           
           // Clear chunks for next segment
@@ -220,8 +243,43 @@ document.addEventListener('DOMContentLoaded', () => {
           // Send audio to server for transcription
           console.log('DEBUG: Sending audio for transcription');
           await transcribeAudio(audioBlob);
+          
+          // Restart recording if we're still in recording mode and not currently speaking
+          if (isRecording && !isSpeaking) {
+            setTimeout(() => {
+              if (isRecording && mediaRecorder && mediaRecorder.state !== 'recording') {
+                console.log('DEBUG: Restarting MediaRecorder after processing');
+                mediaRecorder.start();
+                transcriptionStatus.textContent = 'Listening';
+              }
+            }, 500); // Short delay to ensure processing is complete
+          }
         } else {
           console.log(`DEBUG: Skipping transcription - chunks: ${audioChunks.length}, isRecording: ${isRecording}, transcriptionInProgress: ${transcriptionInProgress}`);
+          
+          // Restart recording even if we skipped transcription
+          if (isRecording && mediaRecorder && mediaRecorder.state !== 'recording') {
+            setTimeout(() => {
+              if (isRecording) {
+                console.log('DEBUG: Restarting MediaRecorder after skipping transcription');
+                mediaRecorder.start();
+              }
+            }, 500);
+          }
+        }
+      };
+      
+      // Add error handler for MediaRecorder
+      mediaRecorder.onerror = (event) => {
+        console.error('DEBUG: MediaRecorder error:', event.error);
+        // Try to restart the recorder if there's an error
+        if (isRecording && mediaRecorder && mediaRecorder.state !== 'recording') {
+          try {
+            console.log('DEBUG: Attempting to restart MediaRecorder after error');
+            mediaRecorder.start();
+          } catch (e) {
+            console.error('DEBUG: Failed to restart MediaRecorder after error:', e);
+          }
         }
       };
       
@@ -231,20 +289,40 @@ document.addEventListener('DOMContentLoaded', () => {
       transcriptionStatus.textContent = 'Recording';
       transcriptionStatus.classList.add('pulse');
       
-      // Set up a timeout to stop the initial recording after 5 seconds
+      // Set up a timeout to stop the initial recording after 10 seconds
       setTimeout(() => {
         if (mediaRecorder && mediaRecorder.state === 'recording' && !isSpeaking) {
           console.log('DEBUG: Stopping initial recording segment after timeout');
           mediaRecorder.stop();
           transcriptionStatus.textContent = 'Processing';
         }
-      }, 5000);
+      }, 10000);
+      
+      // Set up a periodic check to ensure recorder is working
+      recorderCheckInterval = setInterval(() => {
+        if (!isRecording) {
+          clearInterval(recorderCheckInterval);
+          return;
+        }
+        
+        console.log(`DEBUG: Recorder check - state: ${mediaRecorder.state}, chunks: ${audioChunks.length}`);
+        
+        // If we've been silent for too long and the recorder isn't running, restart it
+        if (isRecording && !isSpeaking && mediaRecorder && mediaRecorder.state !== 'recording') {
+          try {
+            console.log('DEBUG: Periodic restart of recorder');
+            mediaRecorder.start();
+            transcriptionStatus.textContent = 'Listening';
+          } catch (e) {
+            console.error('DEBUG: Error in periodic restart:', e);
+          }
+        }
+      }, 15000); // Check every 15 seconds
       
       // Update UI
       startButton.disabled = true;
       stopButton.disabled = false;
       recordingStatus.textContent = 'Listening for speech...';
-      transcriptionStatus.textContent = 'Ready';
       
     } catch (error) {
       console.error('DEBUG: Error during recording setup:', error);
@@ -263,6 +341,20 @@ document.addEventListener('DOMContentLoaded', () => {
     transcriptionStatus.textContent = 'Stopped';
     transcriptionStatus.classList.remove('pulse');
     
+    // Clear the recorder check interval
+    if (recorderCheckInterval) {
+      console.log('DEBUG: Clearing recorder check interval');
+      clearInterval(recorderCheckInterval);
+      recorderCheckInterval = null;
+    }
+    
+    // Clear any pending silence timeout
+    if (silenceTimeout) {
+      console.log('DEBUG: Clearing silence timeout');
+      clearTimeout(silenceTimeout);
+      silenceTimeout = null;
+    }
+    
     if (mediaRecorder && mediaRecorder.state === 'recording') {
       console.log('DEBUG: Stopping media recorder');
       mediaRecorder.stop();
@@ -277,6 +369,11 @@ document.addEventListener('DOMContentLoaded', () => {
     if (vadProcessor) {
       console.log('DEBUG: Disconnecting VAD processor');
       vadProcessor.disconnect();
+    }
+    
+    if (audioContext && audioContext.state !== 'closed') {
+      console.log('DEBUG: Closing audio context');
+      audioContext.close().catch(err => console.error('DEBUG: Error closing audio context:', err));
     }
     
     // Stop visualization
@@ -301,6 +398,12 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
       
+      // Skip very small audio blobs as they're likely just silence or noise
+      if (audioBlob.size < 1000) {
+        console.log(`DEBUG: Audio blob too small (${audioBlob.size} bytes), skipping transcription`);
+        return;
+      }
+      
       transcriptionInProgress = true;
       transcriptionStatus.textContent = 'Transcribing...';
       
@@ -309,52 +412,73 @@ document.addEventListener('DOMContentLoaded', () => {
       const formData = new FormData();
       formData.append('audio', audioBlob);
       
-      // Send to server
-      console.log('DEBUG: Sending POST request to /transcribe');
-      const response = await fetch('/transcribe', {
-        method: 'POST',
-        body: formData
-      });
+      // Set up timeout for transcription request
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => {
+        controller.abort();
+        console.log('DEBUG: Transcription request timed out after 30 seconds');
+      }, 30000); // 30 second timeout
       
-      if (!response.ok) {
-        console.error('DEBUG: Server responded with error', response.status, response.statusText);
-        throw new Error('Transcription request failed');
-      }
-      
-      console.log('DEBUG: Transcription response received');
-      const result = await response.json();
-      console.log('DEBUG: Transcription result:', result);
-      
-      // If we have text, append it to the output
-      if (result.text && result.text.trim()) {
-        console.log('DEBUG: Transcription text received:', result.text);
-        const currentText = transcriptionOutput.textContent;
+      try {
+        // Send to server
+        console.log('DEBUG: Sending POST request to /transcribe');
+        const response = await fetch('/transcribe', {
+          method: 'POST',
+          body: formData,
+          signal: controller.signal
+        });
         
-        // Check if current text is empty or just the placeholder
-        if (!currentText || currentText === 'Start listening to see real-time transcription here.') {
-          transcriptionOutput.textContent = result.text;
-        } else {
-          // Append new text with proper spacing and punctuation
-          const lastChar = currentText.trim().slice(-1);
-          const needsPunctuation = !['!', '.', '?', ',', ';', ':'].includes(lastChar);
-          const needsSpace = currentText.trim().length > 0 && !currentText.endsWith(' ');
-          
-          if (needsPunctuation) {
-            transcriptionOutput.textContent = `${currentText}${needsSpace ? ' ' : ''}${result.text}`;
-          } else {
-            transcriptionOutput.textContent = `${currentText}${needsSpace ? ' ' : ''}${result.text}`;
-          }
+        clearTimeout(timeoutId);
+        
+        if (!response.ok) {
+          console.error('DEBUG: Server responded with error', response.status, response.statusText);
+          throw new Error(`Transcription request failed with status: ${response.status}`);
         }
         
-        // Update status
-        recordingStatus.textContent = 'Listening for more speech...';
-        transcriptionStatus.textContent = 'Ready';
-      } else {
-        console.log('DEBUG: No transcription text received or empty text');
-        transcriptionStatus.textContent = 'Ready';
+        console.log('DEBUG: Transcription response received');
+        const result = await response.json();
+        console.log('DEBUG: Transcription result:', result);
+        
+        // If we have text, append it to the output
+        if (result.text && result.text.trim()) {
+          console.log('DEBUG: Transcription text received:', result.text);
+          const currentText = transcriptionOutput.textContent;
+          
+          // Check if current text is empty or just the placeholder
+          if (!currentText || currentText === 'Start listening to see real-time transcription here.') {
+            transcriptionOutput.textContent = result.text;
+          } else {
+            // Append new text with proper spacing and punctuation
+            const lastChar = currentText.trim().slice(-1);
+            const needsPunctuation = !['!', '.', '?', ',', ';', ':'].includes(lastChar);
+            const needsSpace = currentText.trim().length > 0 && !currentText.endsWith(' ');
+            
+            if (needsPunctuation) {
+              transcriptionOutput.textContent = `${currentText}${needsSpace ? ' ' : ''}${result.text}`;
+            } else {
+              transcriptionOutput.textContent = `${currentText}${needsSpace ? ' ' : ''}${result.text}`;
+            }
+          }
+          
+          // Update status
+          recordingStatus.textContent = 'Listening for more speech...';
+          transcriptionStatus.textContent = 'Ready';
+        } else {
+          console.log('DEBUG: No transcription text received or empty text');
+          transcriptionStatus.textContent = 'Ready';
+        }
+      } catch (fetchError) {
+        if (fetchError.name === 'AbortError') {
+          console.error('DEBUG: Fetch aborted due to timeout');
+          transcriptionStatus.textContent = 'Timeout';
+        } else {
+          console.error('DEBUG: Fetch error:', fetchError);
+          throw fetchError;
+        }
+      } finally {
+        clearTimeout(timeoutId);
+        transcriptionInProgress = false;
       }
-      
-      transcriptionInProgress = false;
       
     } catch (error) {
       console.error('DEBUG: Error during transcription:', error);

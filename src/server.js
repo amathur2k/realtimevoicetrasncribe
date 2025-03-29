@@ -74,20 +74,33 @@ app.post('/transcribe', upload.single('audio'), async (req, res) => {
     }
 
     console.log('DEBUG: Calling OpenAI transcription API');
-    // Call OpenAI transcription API
+    
+    // Set up a promise with timeout
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('OpenAI API request timed out')), 25000);
+    });
+    
     try {
-      const transcription = await openai.audio.transcriptions.create({
-        file: fs.createReadStream(audioFilePath),
-        model: "gpt-4o-transcribe",
-        temperature: 0.0,  // Reduce temperature for more deterministic results
-        language: "en",    // Default to English for better accuracy
-      });
+      // Race the OpenAI call with a timeout
+      const transcription = await Promise.race([
+        openai.audio.transcriptions.create({
+          file: fs.createReadStream(audioFilePath),
+          model: "whisper-1",
+          temperature: 0.0,  // Reduce temperature for more deterministic results
+          language: "en",    // Default to English for better accuracy
+        }),
+        timeoutPromise
+      ]);
       
       console.log(`DEBUG: Transcription received: "${transcription.text}"`);
 
       // Delete the file after transcription
-      fs.unlinkSync(audioFilePath);
-      console.log('DEBUG: Deleted audio file after transcription');
+      try {
+        fs.unlinkSync(audioFilePath);
+        console.log('DEBUG: Deleted audio file after transcription');
+      } catch (deleteError) {
+        console.error('DEBUG: Error deleting audio file:', deleteError);
+      }
 
       // Return the transcription
       return res.json({ 
@@ -95,11 +108,34 @@ app.post('/transcribe', upload.single('audio'), async (req, res) => {
         complete: true 
       });
     } catch (openaiError) {
+      if (openaiError.message === 'OpenAI API request timed out') {
+        console.error('DEBUG: OpenAI API request timed out after 25 seconds');
+        // Try to clean up the file
+        try {
+          if (fs.existsSync(audioFilePath)) {
+            fs.unlinkSync(audioFilePath);
+            console.log('DEBUG: Deleted audio file after timeout');
+          }
+        } catch (e) {
+          console.error('DEBUG: Error deleting file after timeout:', e);
+        }
+        return res.status(504).json({ error: 'OpenAI API request timed out', message: 'The transcription request took too long' });
+      }
+      
       console.error('DEBUG: OpenAI API error:', openaiError);
       
       // Check if it's an authentication error
       if (openaiError.message && openaiError.message.includes('API key')) {
         console.error('DEBUG: Authentication error - check your OpenAI API key');
+        // Try to clean up the file
+        try {
+          if (fs.existsSync(audioFilePath)) {
+            fs.unlinkSync(audioFilePath);
+          }
+        } catch (e) {
+          console.error('DEBUG: Error deleting file after auth error:', e);
+        }
+        return res.status(401).json({ error: 'Authentication error', message: 'Check your OpenAI API key' });
       }
       
       throw openaiError;
@@ -108,9 +144,13 @@ app.post('/transcribe', upload.single('audio'), async (req, res) => {
     console.error('DEBUG: Transcription error:', error);
     
     // Remove the file if it exists
-    if (req.file && fs.existsSync(req.file.path)) {
-      fs.unlinkSync(req.file.path);
-      console.log('DEBUG: Deleted audio file after error');
+    try {
+      if (req.file && fs.existsSync(req.file.path)) {
+        fs.unlinkSync(req.file.path);
+        console.log('DEBUG: Deleted audio file after error');
+      }
+    } catch (deleteError) {
+      console.error('DEBUG: Error deleting file in error handler:', deleteError);
     }
     
     res.status(500).json({ error: 'Failed to transcribe audio', message: error.message });
