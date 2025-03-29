@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Real-time Voice Transcription</title>
+  <title>Real-time Voice Transcription with Speaker Detection</title>
   <style>
     body {
       font-family: Arial, sans-serif;
@@ -71,7 +71,9 @@
       border-radius: 8px;
       text-align: left;
       border: 1px solid #ddd;
-      min-height: 80px;
+      min-height: 200px;
+      max-height: 400px;
+      overflow-y: auto;
       position: relative;
     }
     .transcription-title {
@@ -109,11 +111,55 @@
         opacity: 1;
       }
     }
+    
+    /* Speaker diarization styles */
+    .transcription-segment {
+      margin-bottom: 10px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid #eee;
+    }
+    .timestamp {
+      font-size: 12px;
+      color: #888;
+      margin-right: 6px;
+      font-family: monospace;
+    }
+    .speaker {
+      font-weight: bold;
+      margin-right: 6px;
+    }
+    .segment-text {
+      display: inline;
+    }
+    
+    /* Speaker color indicators */
+    .speaker-legend {
+      display: flex;
+      justify-content: center;
+      margin: 10px 0;
+    }
+    .speaker-indicator {
+      display: flex;
+      align-items: center;
+      margin: 0 10px;
+    }
+    .speaker-color {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      margin-right: 5px;
+    }
+    .speaker1-color {
+      background-color: #4285f4;
+    }
+    .speaker2-color {
+      background-color: #34a853;
+    }
   </style>
 </head>
 <body>
-  <h1>Real-time Voice Transcription</h1>
-  <p>Click 'Start' to begin listening. Speak naturally and your speech will be transcribed in real-time using OpenAI.</p>
+  <h1>Real-time Voice Transcription with Speaker Detection</h1>
+  <p>Click 'Start' to begin listening. The system will automatically identify different speakers in the conversation.</p>
   
   <div class="visualizer">
     <canvas id="audioVisualizer"></canvas>
@@ -127,8 +173,19 @@
     <button id="stopButton" disabled>Stop</button>
   </div>
   
+  <div class="speaker-legend">
+    <div class="speaker-indicator">
+      <div class="speaker-color speaker1-color"></div>
+      <div>Speaker 1</div>
+    </div>
+    <div class="speaker-indicator">
+      <div class="speaker-color speaker2-color"></div>
+      <div>Speaker 2</div>
+    </div>
+  </div>
+  
   <div class="transcription-result">
-    <div class="transcription-title">Transcription</div>
+    <div class="transcription-title">Transcription with Speaker Detection</div>
     <div class="status-badge" id="transcription-status">Ready</div>
     <div class="transcription-text" id="transcription-output">Start listening to see real-time transcription here.</div>
   </div>

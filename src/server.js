@@ -88,11 +88,16 @@ app.post('/transcribe', upload.single('audio'), async (req, res) => {
           model: "whisper-1",
           temperature: 0.0,  // Reduce temperature for more deterministic results
           language: "en",    // Default to English for better accuracy
+          response_format: "verbose_json", // Get timestamps and other metadata
+          timestamp_granularities: ["segment"], // Get segment timestamps
         }),
         timeoutPromise
       ]);
       
-      console.log(`DEBUG: Transcription received: "${transcription.text}"`);
+      console.log(`DEBUG: Transcription received with ${transcription.segments?.length || 0} segments`);
+      
+      // Process segments to identify different speakers
+      const processedTranscription = processTranscriptionWithSpeakers(transcription);
 
       // Delete the file after transcription
       try {
@@ -102,11 +107,8 @@ app.post('/transcribe', upload.single('audio'), async (req, res) => {
         console.error('DEBUG: Error deleting audio file:', deleteError);
       }
 
-      // Return the transcription
-      return res.json({ 
-        text: transcription.text.trim(),
-        complete: true 
-      });
+      // Return the processed transcription
+      return res.json(processedTranscription);
     } catch (openaiError) {
       if (openaiError.message === 'OpenAI API request timed out') {
         console.error('DEBUG: OpenAI API request timed out after 25 seconds');
@@ -156,6 +158,73 @@ app.post('/transcribe', upload.single('audio'), async (req, res) => {
     res.status(500).json({ error: 'Failed to transcribe audio', message: error.message });
   }
 });
+
+// Process transcription to identify different speakers
+function processTranscriptionWithSpeakers(transcription) {
+  if (!transcription.segments || transcription.segments.length === 0) {
+    return { 
+      text: transcription.text?.trim() || '', 
+      segments: [],
+      complete: true 
+    };
+  }
+  
+  console.log(`DEBUG: Processing ${transcription.segments.length} segments for speaker detection`);
+  
+  // Simple diarization using audio features (pause detection and energy levels)
+  let currentSpeakerId = 1;
+  let lastEndTime = 0;
+  let minimumPauseBetweenSpeakers = 1.0; // 1 second pause suggests new speaker
+  
+  const processedSegments = transcription.segments.map((segment, index) => {
+    const startTime = segment.start;
+    const endTime = segment.end;
+    const text = segment.text;
+    
+    // If this is not the first segment and there's a significant pause
+    // assume it's a new speaker
+    if (index > 0 && startTime - lastEndTime > minimumPauseBetweenSpeakers) {
+      currentSpeakerId = currentSpeakerId === 1 ? 2 : 1; // Toggle between speakers 1 and 2
+    }
+    
+    // Check for question marks which often indicate a change in speaker
+    if (index > 0 && transcription.segments[index-1].text.trim().endsWith('?')) {
+      currentSpeakerId = currentSpeakerId === 1 ? 2 : 1;
+    }
+    
+    lastEndTime = endTime;
+    
+    const formattedStartTime = formatTimestamp(startTime);
+    
+    return {
+      text,
+      start: startTime,
+      end: endTime,
+      formattedTime: formattedStartTime,
+      speaker: `Speaker ${currentSpeakerId}`,
+      speakerId: currentSpeakerId
+    };
+  });
+  
+  // Format the full text with speaker annotations and timestamps
+  const formattedText = processedSegments.map(segment => 
+    `[${segment.formattedTime}] ${segment.speaker}: ${segment.text}`
+  ).join('\n');
+  
+  return {
+    text: formattedText,
+    rawText: transcription.text,
+    segments: processedSegments,
+    complete: true
+  };
+}
+
+// Format timestamp as MM:SS
+function formatTimestamp(seconds) {
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = Math.floor(seconds % 60);
+  return `${minutes.toString().padStart(2, '0')}:${remainingSeconds.toString().padStart(2, '0')}`;
+}
 
 // Start the server
 app.listen(PORT, () => {

@@ -439,26 +439,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const result = await response.json();
         console.log('DEBUG: Transcription result:', result);
         
-        // If we have text, append it to the output
-        if (result.text && result.text.trim()) {
-          console.log('DEBUG: Transcription text received:', result.text);
-          const currentText = transcriptionOutput.textContent;
-          
-          // Check if current text is empty or just the placeholder
-          if (!currentText || currentText === 'Start listening to see real-time transcription here.') {
-            transcriptionOutput.textContent = result.text;
-          } else {
-            // Append new text with proper spacing and punctuation
-            const lastChar = currentText.trim().slice(-1);
-            const needsPunctuation = !['!', '.', '?', ',', ';', ':'].includes(lastChar);
-            const needsSpace = currentText.trim().length > 0 && !currentText.endsWith(' ');
-            
-            if (needsPunctuation) {
-              transcriptionOutput.textContent = `${currentText}${needsSpace ? ' ' : ''}${result.text}`;
-            } else {
-              transcriptionOutput.textContent = `${currentText}${needsSpace ? ' ' : ''}${result.text}`;
-            }
-          }
+        // Handle the new transcription format with speaker diarization
+        if (result.text) {
+          console.log('DEBUG: Displaying transcription with speaker diarization');
+          displayTranscriptionWithSpeakers(result);
           
           // Update status
           recordingStatus.textContent = 'Listening for more speech...';
@@ -491,6 +475,76 @@ document.addEventListener('DOMContentLoaded', () => {
         startButton.disabled = false;
         stopButton.disabled = true;
       }
+    }
+  }
+  
+  // Display transcription with speaker identification
+  function displayTranscriptionWithSpeakers(result) {
+    // Get the current content
+    const currentContent = transcriptionOutput.innerHTML;
+    
+    // Check if we need to initialize or append
+    if (!currentContent || currentContent === 'Start listening to see real-time transcription here.') {
+      // Initialize with the new content in a formatted way
+      formatTranscriptionOutput(result);
+    } else {
+      // Append to existing content
+      appendTranscriptionOutput(result);
+    }
+    
+    // Scroll to the bottom of the transcription
+    transcriptionOutput.scrollTop = transcriptionOutput.scrollHeight;
+  }
+  
+  // Format transcription output with speaker diarization
+  function formatTranscriptionOutput(result) {
+    // If we have the segments, format each segment with speaker info
+    if (result.segments && result.segments.length > 0) {
+      transcriptionOutput.innerHTML = '';
+      
+      // Create styled HTML for each segment
+      result.segments.forEach(segment => {
+        const speakerColor = segment.speakerId === 1 ? '#4285f4' : '#34a853'; // Different colors for different speakers
+        
+        const segmentElement = document.createElement('div');
+        segmentElement.className = 'transcription-segment';
+        segmentElement.innerHTML = `
+          <span class="timestamp">[${segment.formattedTime}]</span>
+          <span class="speaker" style="color: ${speakerColor};">${segment.speaker}:</span>
+          <span class="segment-text">${segment.text}</span>
+        `;
+        
+        transcriptionOutput.appendChild(segmentElement);
+      });
+    } else {
+      // Fallback to plain text if no segments
+      transcriptionOutput.textContent = result.text || '';
+    }
+  }
+  
+  // Append new transcription segments to existing output
+  function appendTranscriptionOutput(result) {
+    // If we have segments, append only the new ones
+    if (result.segments && result.segments.length > 0) {
+      // Create styled HTML for each segment
+      result.segments.forEach(segment => {
+        const speakerColor = segment.speakerId === 1 ? '#4285f4' : '#34a853';
+        
+        const segmentElement = document.createElement('div');
+        segmentElement.className = 'transcription-segment';
+        segmentElement.innerHTML = `
+          <span class="timestamp">[${segment.formattedTime}]</span>
+          <span class="speaker" style="color: ${speakerColor};">${segment.speaker}:</span>
+          <span class="segment-text">${segment.text}</span>
+        `;
+        
+        transcriptionOutput.appendChild(segmentElement);
+      });
+    } else {
+      // Fallback to appending plain text
+      const newContent = document.createElement('div');
+      newContent.textContent = result.text || '';
+      transcriptionOutput.appendChild(newContent);
     }
   }
   
